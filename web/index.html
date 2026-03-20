@@ -68,6 +68,7 @@ header h1 { font-size: 18px; font-weight: 600; }
 
 .chat-area {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 24px;
   display: flex;
@@ -98,7 +99,6 @@ header h1 { font-size: 18px; font-weight: 600; }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius) var(--radius) var(--radius) 4px;
-  overflow: hidden;
 }
 
 .message.assistant .answer {
