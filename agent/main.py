@@ -49,6 +49,7 @@ def process_question(
     phone_number: str,
     previous_response_id: str | None = None,
     response_format: str = "text",
+    model: str = "",
 ) -> dict:
     """Обработать вопрос клиента. Возвращает все промежуточные шаги и ответ.
 
@@ -62,6 +63,12 @@ def process_question(
     tools = build_tools()
     steps = []
     model_outputs = []
+
+    # Определяем URI модели
+    if model:
+        effective_model = f"gpt://{YC_FOLDER_ID}/{model}"
+    else:
+        effective_model = MODEL_URI
 
     # Формируем input
     format_hint = ""
@@ -80,7 +87,7 @@ def process_question(
     input_data: str | list = user_input
 
     kwargs = {
-        "model": MODEL_URI,
+        "model": effective_model,
         "instructions": SYSTEM_PROMPT,
         "tools": tools,
         "input": input_data,
@@ -186,7 +193,7 @@ def process_question(
         # Сохраняем информацию о раунде
         model_outputs.append({
             "round": round_num + 1,
-            "model": MODEL_URI,
+            "model": effective_model,
             "input_summary": round_input_summary,
             "decisions": round_decisions,
             "has_more": bool(function_outputs),
@@ -198,7 +205,7 @@ def process_question(
 
         # Продолжаем с результатами функций
         kwargs = {
-            "model": MODEL_URI,
+            "model": effective_model,
             "instructions": SYSTEM_PROMPT,
             "tools": tools,
             "input": function_outputs,

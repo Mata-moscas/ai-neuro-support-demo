@@ -7,6 +7,7 @@ class AskRequest(BaseModel):
     question: str = Field(..., description="Текст вопроса клиента")
     phone_number: str = Field(..., description="Номер телефона клиента (например, 79001234567)")
     response_format: str = Field(default="text", description="Формат ответа: 'text' или 'json'")
+    model: str = Field(default="", description="Имя модели (например, 'yandexgpt'). Пустая строка — модель по умолчанию.")
 
 
 class ContinueRequest(BaseModel):

@@ -60,6 +60,7 @@ async def ask(request: AskRequest):
             question=request.question,
             phone_number=request.phone_number,
             response_format=request.response_format,
+            model=request.model,
         )
         return AgentResponse(
             answer=result["answer"],

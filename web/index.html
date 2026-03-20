@@ -394,6 +394,15 @@ header h1 { font-size: 18px; font-weight: 600; }
 <div class="settings">
   <label>Телефон клиента:</label>
   <input type="text" id="phone" value="79001234567" placeholder="79001234567">
+  <label>Модель:</label>
+  <select id="model">
+    <option value="">По умолчанию (yandexgpt)</option>
+    <option value="yandexgpt">yandexgpt</option>
+    <option value="yandexgpt-lite">yandexgpt-lite</option>
+    <option value="yandexgpt/rc">yandexgpt/rc</option>
+    <option value="yandexgpt-32k">yandexgpt-32k</option>
+    <option value="totally-unknown-model">totally-unknown-model</option>
+  </select>
   <label>Формат:</label>
   <select id="format">
     <option value="text">Текст (черновик)</option>
@@ -619,6 +628,7 @@ async function send() {
 
   const phone = document.getElementById('phone').value.trim();
   const fmt = document.getElementById('format').value;
+  const model = document.getElementById('model').value;
 
   input.value = '';
   input.style.height = 'auto';
@@ -630,7 +640,7 @@ async function send() {
   try {
     const body = conversationId
       ? { message: text, conversation_id: conversationId }
-      : { question: text, phone_number: phone, response_format: fmt };
+      : { question: text, phone_number: phone, response_format: fmt, model: model };
 
     const endpoint = conversationId ? '/api/continue' : '/api/ask';
 
