@@ -18,3 +18,4 @@ class AgentResponse(BaseModel):
     answer: str = Field(..., description="Текст ответа агента")
     steps: list[dict] = Field(default_factory=list, description="Промежуточные шаги агента")
     response_id: str | None = Field(None, description="ID ответа для продолжения диалога")
+    model_outputs: list[dict] = Field(default_factory=list, description="Запросы к модели и её решения по раундам")
