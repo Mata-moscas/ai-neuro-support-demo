@@ -1,0 +1,35 @@
+services:
+  # --- Основной агент (API + Web UI) ---
+  agent:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      PORT: "8080"
+
+  # --- MCP-серверы (опционально, для standalone-деплоя) ---
+  mcp-customer-meta:
+    build: ./mcp_servers/customer_meta
+    ports:
+      - "8001:8001"
+    profiles: ["mcp"]
+
+  mcp-billing:
+    build: ./mcp_servers/billing
+    ports:
+      - "8002:8002"
+    profiles: ["mcp"]
+
+  mcp-incidents:
+    build: ./mcp_servers/incidents
+    ports:
+      - "8003:8003"
+    profiles: ["mcp"]
+
+  mcp-subscriptions:
+    build: ./mcp_servers/subscriptions
+    ports:
+      - "8004:8004"
+    profiles: ["mcp"]
