@@ -65,6 +65,7 @@ async def ask(request: AskRequest):
             answer=result["answer"],
             steps=result["steps"],
             response_id=result["response_id"],
+            model_outputs=result.get("model_outputs", []),
         )
     except Exception as e:
         logger.exception("Error processing question")
@@ -88,6 +89,7 @@ async def continue_conv(request: ContinueRequest):
             answer=result["answer"],
             steps=result["steps"],
             response_id=result["response_id"],
+            model_outputs=result.get("model_outputs", []),
         )
     except Exception as e:
         logger.exception("Error continuing dialog")

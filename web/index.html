@@ -216,6 +216,158 @@ header h1 { font-size: 18px; font-weight: 600; }
 .input-area button:hover { opacity: 0.9; }
 .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Панель вывода модели */
+.model-panel {
+  border-bottom: 1px solid var(--border);
+  background: #fafbfc;
+}
+
+.model-panel-toggle {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  background: linear-gradient(135deg, #667eea11, #764ba211);
+  border-bottom: 1px solid var(--border);
+  color: #4a5568;
+}
+
+.model-panel-toggle:hover { background: linear-gradient(135deg, #667eea22, #764ba222); }
+.model-panel-toggle .chevron { margin-left: auto; transition: transform 0.2s; font-size: 12px; }
+.model-panel-toggle.expanded .chevron { transform: rotate(90deg); }
+
+.model-panel-body {
+  display: none;
+  padding: 16px;
+}
+
+.model-panel-body.open { display: block; }
+
+.model-round {
+  margin-bottom: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: white;
+}
+
+.model-round:last-child { margin-bottom: 0; }
+
+.round-header {
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.round-badge {
+  background: rgba(255,255,255,0.25);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.round-model {
+  font-weight: 400;
+  opacity: 0.85;
+  font-size: 11px;
+  margin-left: auto;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.round-input {
+  padding: 8px 14px;
+  background: #f7fafc;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.round-input .label {
+  font-weight: 600;
+  color: #4a5568;
+  white-space: nowrap;
+}
+
+.round-input .value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.round-decisions {
+  padding: 10px 14px;
+}
+
+.decision {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.decision:last-child { border-bottom: none; }
+
+.decision-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.decision-icon.search { background: var(--step-search); }
+.decision-icon.call { background: var(--step-call); }
+.decision-icon.answer { background: var(--step-result); }
+
+.decision-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.decision-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.decision-details {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: #f7fafc;
+  padding: 6px 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.round-arrow {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0;
+  color: #a0aec0;
+  font-size: 18px;
+}
+
 /* Пустое состояние */
 .empty-state {
   flex: 1;
@@ -319,6 +471,85 @@ function toggleStep(header) {
   header.nextElementSibling.classList.toggle('open');
 }
 
+function renderModelOutputs(modelOutputs) {
+  if (!modelOutputs || modelOutputs.length === 0) return '';
+
+  let inner = '';
+  for (let i = 0; i < modelOutputs.length; i++) {
+    const round = modelOutputs[i];
+
+    // Заголовок раунда
+    let decisionsHtml = '';
+    for (const d of round.decisions) {
+      let iconClass = 'call';
+      let icon = '⚙️';
+      if (d.action === 'file_search') { iconClass = 'search'; icon = '🔍'; }
+      else if (d.action === 'answer') { iconClass = 'answer'; icon = '💬'; }
+
+      let detailsStr = '';
+      if (d.action === 'function_call' && d.details) {
+        const args = d.details.arguments || {};
+        const params = Object.entries(args).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join('\n');
+        detailsStr = `${d.details.function}()\n${params}`;
+      } else if (d.action === 'file_search' && d.details) {
+        detailsStr = `Запросы: ${(d.details.queries || []).join(', ')}\nНайдено: ${d.details.results_count} файл(ов)`;
+        if (d.details.files && d.details.files.length > 0) {
+          detailsStr += '\n' + d.details.files.map(f => '  → ' + f).join('\n');
+        }
+      } else if (d.action === 'answer' && d.details) {
+        detailsStr = `Длина ответа: ${d.details.answer_length} символов`;
+      }
+
+      decisionsHtml += `
+        <div class="decision">
+          <div class="decision-icon ${iconClass}">${icon}</div>
+          <div class="decision-content">
+            <div class="decision-title">${escapeHtml(d.description)}</div>
+            ${detailsStr ? `<div class="decision-details">${escapeHtml(detailsStr)}</div>` : ''}
+          </div>
+        </div>`;
+    }
+
+    // Сокращаем input_summary
+    const inputShort = (round.input_summary || '').length > 120
+      ? round.input_summary.substring(0, 120) + '…'
+      : round.input_summary || '';
+
+    inner += `
+      <div class="model-round">
+        <div class="round-header">
+          <span class="round-badge">Раунд ${round.round}</span>
+          ${round.has_more ? '→ продолжение' : '→ финал'}
+          <span class="round-model">${escapeHtml(round.model || '')}</span>
+        </div>
+        <div class="round-input">
+          <span class="label">Вход:</span>
+          <span class="value" title="${escapeHtml(round.input_summary || '')}">${escapeHtml(inputShort)}</span>
+        </div>
+        <div class="round-decisions">${decisionsHtml}</div>
+      </div>`;
+
+    if (i < modelOutputs.length - 1) {
+      inner += '<div class="round-arrow">↓</div>';
+    }
+  }
+
+  return `
+    <div class="model-panel">
+      <div class="model-panel-toggle" onclick="toggleModelPanel(this)">
+        <span>🧠</span>
+        Решения модели: ${modelOutputs.length} раунд(ов)
+        <span class="chevron">▶</span>
+      </div>
+      <div class="model-panel-body">${inner}</div>
+    </div>`;
+}
+
+function toggleModelPanel(el) {
+  el.classList.toggle('expanded');
+  el.nextElementSibling.classList.toggle('open');
+}
+
 function renderSteps(steps) {
   if (!steps || steps.length === 0) return '';
 
@@ -418,9 +649,10 @@ async function send() {
 
     hideLoading();
 
+    const modelOutputsHtml = renderModelOutputs(data.model_outputs || []);
     const stepsHtml = renderSteps(data.steps || []);
     const answerHtml = `<div class="answer">${escapeHtml(data.answer || '')}</div>`;
-    addMessage('assistant', stepsHtml + answerHtml);
+    addMessage('assistant', modelOutputsHtml + stepsHtml + answerHtml);
 
     if (data.response_id) {
       conversationId = data.response_id;
