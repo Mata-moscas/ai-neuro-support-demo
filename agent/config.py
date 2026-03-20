@@ -2,6 +2,10 @@
 
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 # --- Yandex AI Studio ---
 YC_API_KEY = os.getenv("YC_API_KEY", "")
