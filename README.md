@@ -1,9 +1,99 @@
 # AI Neuro Support Demo
 
-Прототип агента-ассистента для поддержки клиентов телеком-оператора (МТС).
-Агент автоматически классифицирует обращение, находит нужный сценарий, собирает данные о клиенте из внутренних систем и формирует ответ.
+Прототип агента-ассистента для поддержки клиентов телеком-оператора.
+Агент автоматически классифицирует обращение, находит нужный сценарий в базе знаний,
+собирает данные о клиенте и формирует ответ.
 
-**LLM**: Yandex GPT через OpenAI-совместимое API | **MCP**: FastMCP | **Vector Store**: ChromaDB
+**Платформа**: Yandex AI Studio | **LLM**: YandexGPT (Responses API) | **Поиск**: Vector Store (file_search)
+
+---
+
+## Архитектура
+
+```
+                         ┌──────────────────────────────────────┐
+                         │          Yandex AI Studio            │
+                         │                                      │
+                         │  ┌──────────────┐  ┌──────────────┐  │
+                         │  │  YandexGPT   │  │ Vector Store │  │
+                         │  │ (Responses   │  │ (file_search)│  │
+                         │  │    API)      │  │ 114 сценариев│  │
+                         │  └──────┬───────┘  └──────┬───────┘  │
+                         │         │                  │          │
+                         │         │  tool calling    │          │
+                         │         │  ◄───────────────┘          │
+                         └─────────┼─────────────────────────────┘
+                                   │
+                                   │ OpenAI-compatible API
+                                   │ (Responses API)
+                                   │
+┌────────────┐            ┌────────┴────────┐
+│            │  POST /ask │                 │
+│  Оператор  ├───────────►│  FastAPI Agent  │
+│  поддержки │◄───────────┤  (Python)       │
+│            │   ответ    │                 │
+│  Web UI    │            │  ┌────────────┐ │
+│  (чат-бот) │            │  │ Tool       │ │
+│            │            │  │ Executor   │ │
+└────────────┘            │  │            │ │
+                          │  │ get_customer│ │──► MCP Server: customer_meta
+                          │  │ get_balance │ │──► MCP Server: billing
+                          │  │ get_txns   │ │──► MCP Server: incidents
+                          │  │ get_incid. │ │──► MCP Server: subscriptions
+                          │  │ get_subs   │ │
+                          │  └────────────┘ │
+                          └─────────────────┘
+                                   │
+                           Yandex Serverless
+                             Containers
+```
+
+### Цикл обработки запроса
+
+```
+Оператор                    FastAPI                 Yandex AI Studio
+   │                           │                          │
+   │  POST /api/ask            │                          │
+   │  {question, phone}        │                          │
+   │──────────────────────────►│                          │
+   │                           │  responses.create()      │
+   │                           │  + file_search tool      │
+   │                           │  + function tools        │
+   │                           │─────────────────────────►│
+   │                           │                          │
+   │                           │  file_search_call        │
+   │                           │  (найдены сценарии)      │
+   │                           │◄─────────────────────────│
+   │                           │                          │
+   │                           │  function_call           │
+   │                           │  (get_balance, ...)      │
+   │                           │◄─────────────────────────│
+   │                           │                          │
+   │                           │  execute function        │
+   │                           │  (мок-данные / MCP)      │
+   │                           │                          │
+   │                           │  function_call_output    │
+   │                           │─────────────────────────►│
+   │                           │                          │
+   │                           │  message (финальный      │
+   │                           │  ответ агента)           │
+   │                           │◄─────────────────────────│
+   │                           │                          │
+   │  {steps, answer}          │                          │
+   │◄──────────────────────────│                          │
+```
+
+### Компоненты
+
+| Компонент | Технология | Описание |
+|-----------|-----------|----------|
+| LLM | YandexGPT via Responses API | Генерация ответов, tool calling |
+| Поиск сценариев | Vector Store (file_search) | 114 сценариев из Instructions.json |
+| Функции агента | Function calling | 5 инструментов для сбора данных клиента |
+| API | FastAPI | REST API + раздача Web UI |
+| Web UI | Vanilla HTML/CSS/JS | Чат с отображением промежуточных шагов |
+| MCP-серверы | FastMCP (опционально) | Эмуляция внутренних систем |
+| Деплой | Yandex Serverless Containers | Контейнер с агентом |
 
 ---
 
@@ -11,154 +101,158 @@
 
 ```
 ai-neuro-support-demo/
-├── README.md
-├── PLAN.md                              # План действий
-├── .env.example                         # Пример переменных окружения
-├── requirements.txt                     # Зависимости агента
-├── Dockerfile                           # Docker-образ агента
-├── docker-compose.yml                   # Оркестрация всех сервисов
-│
-├── agent/                               # Основной агент поддержки
-│   ├── main.py                          # SupportAgent — оркестрация всего цикла
-│   ├── config.py                        # Конфигурация (API ключи, URLs, параметры)
-│   ├── llm_client.py                    # Клиент Yandex GPT (OpenAI SDK)
-│   ├── mcp_client.py                    # MCP-клиент (подключение к серверам, вызов инструментов)
+├── agent/                               # Ядро агента
+│   ├── main.py                          # Оркестрация: Responses API + tool calling loop
+│   ├── config.py                        # Конфигурация (API ключи, model URI, ...)
+│   ├── tools.py                         # Определения функций + мок-данные
 │   └── prompts/
 │       └── system.txt                   # Системный промпт агента
 │
-├── vector_store/                        # Vector Store со сценариями
-│   ├── indexer.py                       # Индексация Instructions.json → ChromaDB
-│   └── searcher.py                      # Семантический поиск сценариев
+├── api/                                 # REST API
+│   ├── app.py                           # FastAPI: /api/ask, /api/continue, /health
+│   └── schemas.py                       # Pydantic-схемы
 │
-├── mcp_servers/                         # MCP-серверы (эмуляция внутренних систем)
-│   ├── customer_meta/                   # Мета клиента: тариф, ФИО, параметры договора
-│   │   ├── server.py                    #   tool: get_customer_info(phone_number)
-│   │   ├── data.py                      #   мок-данные
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── billing/                         # Биллинг: баланс, статус, история списаний
-│   │   ├── server.py                    #   tools: get_balance, get_transactions
-│   │   ├── data.py
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── incidents/                       # Инциденты: аварии, плановые работы
-│   │   ├── server.py                    #   tool: get_incidents(phone_number)
-│   │   ├── data.py
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   └── subscriptions/                   # Подписки: контентные и сервисные
-│       ├── server.py                    #   tool: get_subscriptions(phone_number)
-│       ├── data.py
-│       ├── Dockerfile
-│       └── requirements.txt
+├── web/
+│   └── index.html                       # Веб-интерфейс чат-бота
 │
-├── api/                                 # REST API (FastAPI)
-│   ├── app.py                           # Эндпоинты: /ask, /ask/{id}, /health
-│   └── schemas.py                       # Pydantic-схемы запросов/ответов
+├── setup/
+│   └── upload_scenarios.py              # Загрузка сценариев в Yandex Vector Store
 │
-└── materials/                           # Справочные материалы (исходные файлы)
-    ├── Instructions.json                # 114 сценариев поддержки
-    ├── Описание сценария.docx           # Примеры мета-данных клиента
-    ├── Инструкция по MCP.pdf
-    ├── geocoder.py
-    ├── instructions/
-    └── weather-mcp/                     # Пример MCP-сервера (погода)
+├── mcp_servers/                         # MCP-серверы (опционально)
+│   ├── customer_meta/                   # get_customer_info
+│   ├── billing/                         # get_balance, get_transactions
+│   ├── incidents/                       # get_incidents
+│   └── subscriptions/                   # get_subscriptions
+│
+├── materials/                           # Исходные материалы
+│   ├── Instructions.json                # 114 сценариев поддержки
+│   ├── Описание сценария.docx
+│   └── ...
+│
+├── Dockerfile                           # Контейнер для Serverless Containers
+├── docker-compose.yml                   # Локальный запуск
+├── requirements.txt
+├── .env.example
+└── PLAN.md
 ```
-
----
-
-## Архитектура
-
-```
-┌─────────────────┐
-│  Пользователь   │  (текст / голос → текст)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐     POST /ask
-│   FastAPI (API)  │◄───────────────── Оператор поддержки / НейроСаппорт
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────┐
-│              SupportAgent                        │
-│                                                  │
-│  1. Поиск сценария → Vector Store (ChromaDB)     │
-│     114 сценариев из Instructions.json           │
-│                                                  │
-│  2. Yandex GPT (OpenAI API) ──── tool calling ──►│
-│                                                  │
-│  3. MCP-серверы (streamable-http)                │
-│     ├── customer_meta :8001  (тариф, ФИО)       │
-│     ├── billing       :8002  (баланс, списания) │
-│     ├── incidents     :8003  (аварии на сети)   │
-│     └── subscriptions :8004  (подписки)         │
-│                                                  │
-│  4. Ответ → текст / JSON                        │
-└─────────────────────────────────────────────────┘
-```
-
-### Цикл обработки запроса
-
-1. Оператор отправляет вопрос клиента + номер телефона через `POST /ask`
-2. Агент ищет релевантные сценарии в Vector Store (top-3)
-3. Агент отправляет вопрос + сценарии + инструменты в Yandex GPT
-4. LLM решает, какие данные нужны, и вызывает MCP-инструменты (tool calling)
-5. Агент исполняет вызовы через MCP-клиент → получает данные
-6. LLM формирует финальный ответ на основе данных и сценария
-7. Ответ возвращается оператору (текст или JSON)
 
 ---
 
 ## Быстрый старт
 
-### 1. Настройка
+### Предварительные требования
+
+- Python 3.10+
+- Аккаунт в [Yandex Cloud](https://yandex.cloud/) с доступом к AI Studio
+- Сервисный аккаунт с ролями `ai.assistants.editor` и `ai.languageModels.user`
+- API-ключ с областью действия `yc.ai.foundationModels.execute`
+
+### Шаг 1. Настройка окружения
 
 ```bash
+# Клонирование репозитория
+git clone <url> && cd ai-neuro-support-demo
+
+# Виртуальное окружение
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Зависимости
+pip install -r requirements.txt
+
+# Конфигурация
 cp .env.example .env
-# Заполните YANDEX_GPT_API_KEY и YANDEX_GPT_FOLDER_ID
 ```
 
-### 2. Запуск через Docker Compose
+Заполните `.env`:
+```bash
+YC_API_KEY=<ваш_API_ключ>
+YC_FOLDER_ID=<id_каталога_в_Yandex_Cloud>
+YC_MODEL=yandexgpt
+```
+
+### Шаг 2. Создание Vector Store (поискового индекса)
+
+Загрузите 114 сценариев из `Instructions.json` в Yandex AI Studio:
+
+```bash
+python -m setup.upload_scenarios
+```
+
+Скрипт:
+1. Разбивает `Instructions.json` на отдельные файлы по сценариям
+2. Загружает каждый файл через Files API
+3. Создаёт Vector Store (поисковый индекс)
+4. Выводит `VECTOR_STORE_ID`
+
+Добавьте полученный ID в `.env`:
+```bash
+VECTOR_STORE_ID=<id_из_вывода_скрипта>
+```
+
+### Шаг 3. Запуск
+
+#### Вариант A: Локально
+
+```bash
+uvicorn api.app:app --host 0.0.0.0 --port 8080
+```
+
+Откройте http://localhost:8080 — веб-интерфейс чат-бота.
+
+#### Вариант B: Docker
+
+```bash
+docker build -t neuro-support .
+docker run -p 8080:8080 --env-file .env neuro-support
+```
+
+#### Вариант C: Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-Это поднимет:
-- 4 MCP-сервера (порты 8001–8004)
-- Агент с API (порт 8000)
+---
 
-### 3. Проверка
+## Деплой в Yandex Serverless Containers
 
-```bash
-# Здоровье
-curl http://localhost:8000/health
-
-# Вопрос
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "У меня не работает домашний интернет",
-    "phone_number": "79001234567",
-    "response_format": "text"
-  }'
-```
-
-### 4. Локальный запуск (без Docker)
+### Шаг 1. Соберите и загрузите образ
 
 ```bash
-pip install -r requirements.txt
+# Авторизация в Container Registry
+yc container registry configure-docker
 
-# Запуск MCP-серверов (в отдельных терминалах)
-python mcp_servers/customer_meta/server.py
-python mcp_servers/billing/server.py
-python mcp_servers/incidents/server.py
-python mcp_servers/subscriptions/server.py
+# Сборка
+docker build -t cr.yandex/<registry_id>/neuro-support:latest .
 
-# Запуск агента
-uvicorn api.app:app --host 0.0.0.0 --port 8000
+# Пуш
+docker push cr.yandex/<registry_id>/neuro-support:latest
 ```
+
+### Шаг 2. Создайте Serverless Container
+
+```bash
+yc serverless container create --name neuro-support
+
+yc serverless container revision deploy \
+  --container-name neuro-support \
+  --image cr.yandex/<registry_id>/neuro-support:latest \
+  --service-account-id <sa_id> \
+  --execution-timeout 60s \
+  --memory 512m \
+  --cores 1 \
+  --environment YC_API_KEY=<key>,YC_FOLDER_ID=<folder>,VECTOR_STORE_ID=<vs_id>,YC_MODEL=yandexgpt
+```
+
+### Шаг 3. Сделайте контейнер публичным (опционально)
+
+```bash
+yc serverless container allow-unauthenticated-invoke --name neuro-support
+```
+
+Контейнер будет доступен по URL вида:
+`https://<container_id>.containers.yandexcloud.net`
 
 ---
 
@@ -166,54 +260,109 @@ uvicorn api.app:app --host 0.0.0.0 --port 8000
 
 | Метод | Эндпоинт | Описание |
 |-------|----------|----------|
-| GET   | `/health` | Статус сервиса (кол-во инструментов, сценариев) |
-| POST  | `/ask` | Основной запрос: вопрос клиента → ответ агента |
-| POST  | `/ask/{conversation_id}` | Продолжение диалога (уточняющие вопросы) |
+| GET | `/` | Веб-интерфейс чат-бота |
+| GET | `/health` | Статус сервиса |
+| POST | `/api/ask` | Новый вопрос → ответ агента со всеми шагами |
+| POST | `/api/continue` | Продолжение диалога |
 
-### POST /ask — формат запроса
+### POST /api/ask
 
+**Запрос:**
 ```json
 {
-  "question": "Почему у меня списали деньги?",
+  "question": "У меня не работает интернет",
   "phone_number": "79001234567",
   "response_format": "text"
 }
 ```
 
-### POST /ask — формат ответа
-
+**Ответ:**
 ```json
 {
-  "answer": "Черновик ответа для оператора...",
-  "scenario": "Непоступление платежа / Проблемы при оплате",
-  "format": "text",
-  "phone_number": "79001234567",
-  "conversation_id": "uuid-xxx"
+  "steps": [
+    {
+      "type": "file_search",
+      "queries": ["не работает интернет"],
+      "results": [
+        {"filename": "scenario_CDDA373E.txt", "score": 0.85, "text": "..."}
+      ]
+    },
+    {
+      "type": "function_call",
+      "name": "get_incidents",
+      "arguments": "{\"phone_number\": \"79001234567\"}"
+    },
+    {
+      "type": "function_result",
+      "name": "get_incidents",
+      "result": {"network_issues": [{"type": "Плановые работы", ...}]}
+    }
+  ],
+  "answer": "Сценарий: Проблемы с интернетом\n\nУ клиента обнаружены плановые работы...",
+  "response_id": "abc-123"
+}
+```
+
+### POST /api/continue
+
+**Запрос:**
+```json
+{
+  "message": "А какой у клиента тариф?",
+  "conversation_id": "abc-123"
 }
 ```
 
 ---
 
-## MCP-инструменты
+## Инструменты агента
 
-| Инструмент | Сервер | Описание |
-|-----------|--------|----------|
-| `get_customer_info` | customer_meta | Тариф, ФИО, параметры договора |
-| `get_balance` | billing | Баланс, статус, блокировки, кредитный лимит |
-| `get_transactions` | billing | Списания и платежи за 30 дней |
-| `get_incidents` | incidents | Аварии и плановые работы на сети |
-| `get_subscriptions` | subscriptions | Активные подписки клиента |
+| Функция | Описание |
+|---------|----------|
+| `file_search` | Поиск сценария в Vector Store (114 сценариев) |
+| `get_customer_info` | Тариф, ФИО, параметры договора |
+| `get_balance` | Баланс, статус, блокировки, кредитный лимит |
+| `get_transactions` | Списания и платежи за 30 дней |
+| `get_incidents` | Аварии и плановые работы на сети |
+| `get_subscriptions` | Активные подписки клиента |
 
 ---
 
-## Технологический стек
+## Веб-интерфейс
 
-| Компонент | Технология |
-|-----------|-----------|
-| LLM | Yandex GPT via OpenAI-compatible API |
-| Vector Store | ChromaDB (default embedding function) |
-| MCP-серверы | Python + FastMCP (streamable-http) |
-| API | FastAPI + Pydantic |
-| MCP-клиент | mcp Python SDK |
-| Контейнеризация | Docker + Docker Compose |
-| Язык | Python 3.11+ |
+Чат-бот доступен по адресу `/` (корень). Возможности:
+
+- Ввод вопроса от имени клиента
+- Выбор номера телефона клиента
+- Выбор формата ответа (текст / JSON)
+- Отображение всех промежуточных шагов:
+  - 🔍 Поиск по базе знаний (file_search)
+  - ⚙️ Вызовы функций (function_call)
+  - ✅ Результаты функций (function_result)
+- Продолжение диалога (уточняющие вопросы)
+
+---
+
+## Тестовые данные
+
+Для демонстрации доступны 3 тестовых клиента:
+
+| Телефон | ФИО | Тариф | Баланс | Особенности |
+|---------|-----|-------|--------|-------------|
+| 79001234567 | Иванов И.И. | Smart для своих | 83.83 ₽ | Плановые работы на сети |
+| 79009876543 | Петрова М.С. | Тарифище | 1250.50 ₽ | 2 подписки (Premium + KION) |
+| 79005551234 | Сидоров А.П. | НЕТАРИФ Junior | -15.20 ₽ | Блокировка, авария на сети |
+
+---
+
+## Переменные окружения
+
+| Переменная | Обязательная | Описание |
+|-----------|:---:|----------|
+| `YC_API_KEY` | да | API-ключ Yandex Cloud |
+| `YC_FOLDER_ID` | да | ID каталога в Yandex Cloud |
+| `YC_MODEL` | нет | Модель (по умолчанию `yandexgpt`) |
+| `YC_BASE_URL` | нет | Base URL API (по умолчанию `https://ai.api.cloud.yandex.net/v1`) |
+| `VECTOR_STORE_ID` | нет | ID поискового индекса (Vector Store) |
+| `MAX_TOOL_ROUNDS` | нет | Макс. раундов tool calling (по умолчанию 5) |
+| `PORT` | нет | Порт сервера (по умолчанию 8080) |

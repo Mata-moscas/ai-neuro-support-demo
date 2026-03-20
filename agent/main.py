@@ -1,14 +1,13 @@
-"""Основной агент поддержки: оркестрация Vector Store, LLM и MCP."""
+"""Основной агент поддержки — Yandex AI Studio Responses API."""
 
 import json
 import logging
 import os
-from dataclasses import dataclass, field
 
-from agent.config import MAX_TOOL_CALL_ROUNDS, SCENARIO_TOP_K
-from agent.llm_client import chat_completion, get_llm_client
-from agent.mcp_client import call_tool, discover_tools
-from vector_store.searcher import ScenarioSearcher
+import openai
+
+from agent.config import MAX_TOOL_ROUNDS, MODEL_URI, VECTOR_STORE_ID, YC_API_KEY, YC_BASE_URL, YC_FOLDER_ID
+from agent.tools import FUNCTION_TOOLS, execute_function
 
 logger = logging.getLogger(__name__)
 
@@ -20,175 +19,166 @@ def _load_system_prompt() -> str:
         return f.read()
 
 
-@dataclass
-class Conversation:
-    """Состояние диалога с агентом."""
-    phone_number: str
-    messages: list[dict] = field(default_factory=list)
+SYSTEM_PROMPT = _load_system_prompt()
 
 
-class SupportAgent:
-    """Агент поддержки клиентов.
+def get_client() -> openai.OpenAI:
+    return openai.OpenAI(
+        api_key=YC_API_KEY,
+        base_url=YC_BASE_URL,
+        project=YC_FOLDER_ID,
+    )
 
-    Принимает вопрос, ищет сценарий в Vector Store, собирает данные
-    через MCP-серверы и формирует ответ с помощью Yandex GPT.
-    """
 
-    def __init__(self):
-        self._llm = get_llm_client()
-        self._searcher = ScenarioSearcher()
-        self._tools: list[dict] = []
-        self._system_prompt = _load_system_prompt()
+def build_tools() -> list[dict]:
+    """Собрать все инструменты: file_search (Vector Store) + function tools."""
+    tools = list(FUNCTION_TOOLS)
 
-    async def initialize(self):
-        """Подключиться к MCP-серверам и получить список инструментов."""
-        self._tools = await discover_tools()
-        logger.info(f"Agent initialized with {len(self._tools)} tools")
+    if VECTOR_STORE_ID:
+        tools.append({
+            "type": "file_search",
+            "vector_store_ids": [VECTOR_STORE_ID],
+        })
 
-    async def ask(
-        self,
-        question: str,
-        phone_number: str,
-        conversation: Conversation | None = None,
-        response_format: str = "text",
-    ) -> tuple[dict, Conversation]:
-        """Обработать вопрос клиента.
+    return tools
 
-        Args:
-            question: Текст вопроса клиента.
-            phone_number: Номер телефона клиента.
-            conversation: Существующий диалог (для продолжения).
-            response_format: "text" или "json".
 
-        Returns:
-            {"answer": str, "scenario": str | None, "format": str, "conversation_id": ...}
-        """
-        # 1. Поиск релевантных сценариев
-        scenarios = self._searcher.search(question, top_k=SCENARIO_TOP_K)
-        scenarios_text = self._format_scenarios(scenarios)
+def process_question(
+    client: openai.OpenAI,
+    question: str,
+    phone_number: str,
+    previous_response_id: str | None = None,
+    response_format: str = "text",
+) -> dict:
+    """Обработать вопрос клиента. Возвращает все промежуточные шаги и ответ.
 
-        # 2. Формирование сообщений
-        if conversation is None:
-            conversation = Conversation(phone_number=phone_number)
-            conversation.messages = [
-                {"role": "system", "content": self._system_prompt},
-            ]
-
-        format_instruction = ""
-        if response_format == "json":
-            format_instruction = (
-                "\n\nВажно: верни ответ строго в формате JSON с полями: "
-                '"scenario" (название сценария), "confidence" (уверенность 0-1), '
-                '"answer" (текст ответа клиенту), "data_used" (список использованных данных), '
-                '"follow_up_questions" (список уточняющих вопросов, если есть).'
-            )
-
-        user_message = (
-            f"Номер телефона клиента: {phone_number}\n\n"
-            f"Вопрос клиента: {question}\n\n"
-            f"Найденные сценарии из базы знаний:\n{scenarios_text}"
-            f"{format_instruction}"
-        )
-        conversation.messages.append({"role": "user", "content": user_message})
-
-        # 3. Цикл вызовов LLM с инструментами
-        answer = await self._run_tool_loop(conversation)
-
-        detected_scenario = None
-        if scenarios:
-            detected_scenario = scenarios[0]["title"]
-
-        return {
-            "answer": answer,
-            "scenario": detected_scenario,
-            "format": response_format,
-            "phone_number": phone_number,
-        }, conversation
-
-    async def continue_conversation(
-        self,
-        message: str,
-        conversation: Conversation,
-    ) -> dict:
-        """Продолжить диалог (уточняющие вопросы оператора → агент).
-
-        Args:
-            message: Сообщение от оператора поддержки.
-            conversation: Существующий диалог.
-
-        Returns:
-            {"answer": str, ...}
-        """
-        conversation.messages.append({"role": "user", "content": message})
-        answer = await self._run_tool_loop(conversation)
-
-        return {
-            "answer": answer,
-            "phone_number": conversation.phone_number,
+    Returns:
+        {
+            "steps": [...],
+            "answer": str,
+            "response_id": str,
         }
+    """
+    tools = build_tools()
+    steps = []
 
-    async def _run_tool_loop(self, conversation: Conversation) -> str:
-        """Цикл вызовов LLM → tool calls → LLM → ... → финальный ответ."""
-        for round_num in range(MAX_TOOL_CALL_ROUNDS):
-            response_msg = chat_completion(
-                self._llm,
-                conversation.messages,
-                tools=self._tools if self._tools else None,
-            )
+    # Формируем input
+    format_hint = ""
+    if response_format == "json":
+        format_hint = (
+            "\n\nВажно: верни ответ строго в формате JSON с полями: "
+            '"scenario", "confidence", "answer", "data_used", "follow_up_questions".'
+        )
 
-            # Если нет tool_calls — возвращаем текстовый ответ
-            if not response_msg.tool_calls:
-                answer = response_msg.content or ""
-                conversation.messages.append({"role": "assistant", "content": answer})
-                return answer
+    user_input = (
+        f"Номер телефона клиента: {phone_number}\n"
+        f"Вопрос клиента: {question}"
+        f"{format_hint}"
+    )
 
-            # Обрабатываем tool calls
-            conversation.messages.append({
-                "role": "assistant",
-                "content": response_msg.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in response_msg.tool_calls
-                ],
-            })
+    input_data: str | list = user_input
 
-            for tc in response_msg.tool_calls:
-                tool_name = tc.function.name
-                try:
-                    arguments = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    arguments = {}
+    kwargs = {
+        "model": MODEL_URI,
+        "instructions": SYSTEM_PROMPT,
+        "tools": tools,
+        "input": input_data,
+    }
+    if previous_response_id:
+        kwargs["previous_response_id"] = previous_response_id
 
-                logger.info(f"Round {round_num + 1}: calling tool '{tool_name}' with {arguments}")
-                result = await call_tool(tool_name, arguments, self._tools)
+    # Цикл: LLM → tool calls → execute → LLM → ...
+    response = None
+    for round_num in range(MAX_TOOL_ROUNDS):
+        logger.info(f"Round {round_num + 1}: calling Responses API")
 
-                conversation.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(result, ensure_ascii=False),
+        response = client.responses.create(**kwargs)
+
+        # Собираем шаги из output
+        function_outputs = []
+
+        for item in response.output:
+            if item.type == "file_search_call":
+                step = {
+                    "type": "file_search",
+                    "queries": getattr(item, "queries", []),
+                    "results": [],
+                }
+                for r in getattr(item, "results", []) or []:
+                    step["results"].append({
+                        "filename": getattr(r, "filename", ""),
+                        "score": getattr(r, "score", 0),
+                        "text": getattr(r, "text", "")[:500],
+                    })
+                steps.append(step)
+                logger.info(f"  file_search: {len(step['results'])} results")
+
+            elif item.type == "function_call":
+                steps.append({
+                    "type": "function_call",
+                    "name": item.name,
+                    "arguments": item.arguments,
+                    "call_id": item.call_id,
+                })
+                logger.info(f"  function_call: {item.name}({item.arguments})")
+
+                # Выполняем функцию
+                result = execute_function(item.name, item.arguments)
+                result_json = json.dumps(result, ensure_ascii=False)
+
+                steps.append({
+                    "type": "function_result",
+                    "name": item.name,
+                    "result": result,
+                })
+                logger.info(f"  function_result: {item.name} -> {result_json[:200]}")
+
+                function_outputs.append({
+                    "type": "function_call_output",
+                    "call_id": item.call_id,
+                    "output": result_json,
                 })
 
-        # Если лимит раундов исчерпан
-        return "Не удалось сформировать ответ: превышено максимальное количество итераций."
+            elif item.type == "message":
+                # Финальный текстовый ответ
+                text = ""
+                for content_block in getattr(item, "content", []):
+                    if getattr(content_block, "type", "") == "output_text":
+                        text += getattr(content_block, "text", "")
+                if text:
+                    steps.append({"type": "answer", "text": text})
 
-    @staticmethod
-    def _format_scenarios(scenarios: list[dict]) -> str:
-        if not scenarios:
-            return "Подходящих сценариев не найдено."
+        # Если нет function_calls — цикл завершён
+        if not function_outputs:
+            break
 
-        parts = []
-        for i, s in enumerate(scenarios, 1):
-            parts.append(
-                f"### Сценарий {i}: {s['title']}\n"
-                f"Код: {s['code']}\n"
-                f"Релевантность (distance): {s['distance']:.4f}\n"
-                f"Содержание:\n{s['content'][:2000]}\n"
-            )
-        return "\n".join(parts)
+        # Продолжаем с результатами функций
+        kwargs = {
+            "model": MODEL_URI,
+            "instructions": SYSTEM_PROMPT,
+            "tools": tools,
+            "input": function_outputs,
+            "previous_response_id": response.id,
+        }
+
+    answer = getattr(response, "output_text", "") if response else ""
+
+    return {
+        "steps": steps,
+        "answer": answer,
+        "response_id": response.id if response else None,
+    }
+
+
+def continue_dialog(
+    client: openai.OpenAI,
+    message: str,
+    previous_response_id: str,
+) -> dict:
+    """Продолжить диалог (уточняющий вопрос оператора)."""
+    return process_question(
+        client=client,
+        question=message,
+        phone_number="",  # уже известен из контекста
+        previous_response_id=previous_response_id,
+    )

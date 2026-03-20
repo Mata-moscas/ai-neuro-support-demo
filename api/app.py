@@ -1,122 +1,94 @@
-"""FastAPI-приложение — REST API агента поддержки."""
+"""FastAPI-приложение — REST API + веб-интерфейс агента поддержки."""
 
 import logging
-import uuid
-from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from agent.main import Conversation, SupportAgent
-from api.schemas import (
-    AskRequest,
-    AskResponse,
-    ContinueRequest,
-    ContinueResponse,
-    HealthResponse,
+from agent.config import YC_API_KEY, VECTOR_STORE_ID
+from agent.main import continue_dialog, get_client, process_question
+from api.schemas import AgentResponse, AskRequest, ContinueRequest
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-from vector_store.indexer import index as index_scenarios
-from vector_store.searcher import ScenarioSearcher
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Хранилище диалогов (в памяти; для продакшена — Redis/DB)
-conversations: dict[str, Conversation] = {}
-agent: SupportAgent | None = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Инициализация при старте: индексация сценариев, подключение к MCP."""
-    global agent
-
-    # Индексация Vector Store (если ещё не проиндексировано)
-    logger.info("Indexing scenarios...")
-    try:
-        count = index_scenarios()
-        logger.info(f"Indexed {count} scenarios")
-    except Exception as e:
-        logger.error(f"Failed to index scenarios: {e}")
-
-    # Инициализация агента
-    logger.info("Initializing agent...")
-    agent = SupportAgent()
-    await agent.initialize()
-    logger.info("Agent ready")
-
-    yield
-
-    logger.info("Shutting down")
-
 
 app = FastAPI(
     title="AI Neuro Support Agent",
     description="Агент-ассистент поддержки клиентов телеком-оператора",
-    version="0.1.0",
-    lifespan=lifespan,
+    version="0.2.0",
 )
 
+# Раздача статических файлов (веб-интерфейс)
+WEB_DIR = os.path.join(os.path.dirname(__file__), "..", "web")
 
-@app.get("/health", response_model=HealthResponse)
+
+@app.get("/")
+async def index():
+    """Главная страница — веб-интерфейс чат-бота."""
+    return FileResponse(os.path.join(WEB_DIR, "index.html"))
+
+
+@app.get("/health")
 async def health():
     """Проверка состояния сервиса."""
-    try:
-        searcher = ScenarioSearcher()
-        scenarios_count = searcher._collection.count()
-    except Exception:
-        scenarios_count = 0
-
-    return HealthResponse(
-        status="ok" if agent else "not_initialized",
-        tools_count=len(agent._tools) if agent else 0,
-        scenarios_count=scenarios_count,
-    )
+    return {
+        "status": "ok",
+        "api_key_set": bool(YC_API_KEY),
+        "vector_store_id": VECTOR_STORE_ID or "not configured",
+    }
 
 
-@app.post("/ask", response_model=AskResponse)
+@app.post("/api/ask", response_model=AgentResponse)
 async def ask(request: AskRequest):
     """Основной эндпоинт: задать вопрос агенту.
 
-    Агент классифицирует обращение, собирает данные и формирует ответ.
+    Агент ищет сценарий в Vector Store, собирает данные
+    через function calling и формирует ответ.
     """
-    if agent is None:
-        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not YC_API_KEY:
+        raise HTTPException(status_code=503, detail="YC_API_KEY not configured")
 
-    result, conv = await agent.ask(
-        question=request.question,
-        phone_number=request.phone_number,
-        response_format=request.response_format,
-    )
+    try:
+        client = get_client()
+        result = process_question(
+            client=client,
+            question=request.question,
+            phone_number=request.phone_number,
+            response_format=request.response_format,
+        )
+        return AgentResponse(
+            answer=result["answer"],
+            steps=result["steps"],
+            response_id=result["response_id"],
+        )
+    except Exception as e:
+        logger.exception("Error processing question")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    conversation_id = str(uuid.uuid4())
-    conversations[conversation_id] = conv
 
-    return AskResponse(
-        answer=result["answer"],
-        scenario=result.get("scenario"),
-        format=result["format"],
-        phone_number=result["phone_number"],
-        conversation_id=conversation_id,
-    )
-
-
-@app.post("/ask/{conversation_id}", response_model=ContinueResponse)
-async def continue_conversation(conversation_id: str, request: ContinueRequest):
+@app.post("/api/continue", response_model=AgentResponse)
+async def continue_conv(request: ContinueRequest):
     """Продолжить диалог с агентом (уточняющие вопросы оператора)."""
-    if agent is None:
-        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not YC_API_KEY:
+        raise HTTPException(status_code=503, detail="YC_API_KEY not configured")
 
-    conv = conversations.get(conversation_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    result = await agent.continue_conversation(
-        message=request.message,
-        conversation=conv,
-    )
-
-    return ContinueResponse(
-        answer=result["answer"],
-        phone_number=result["phone_number"],
-        conversation_id=conversation_id,
-    )
+    try:
+        client = get_client()
+        result = continue_dialog(
+            client=client,
+            message=request.message,
+            previous_response_id=request.conversation_id,
+        )
+        return AgentResponse(
+            answer=result["answer"],
+            steps=result["steps"],
+            response_id=result["response_id"],
+        )
+    except Exception as e:
+        logger.exception("Error continuing dialog")
+        raise HTTPException(status_code=500, detail=str(e))
